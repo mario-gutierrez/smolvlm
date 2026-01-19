@@ -22,16 +22,13 @@ Follow the steps below to set up and run the application.
 
 Clone the examples repository from GitHub:
 
-```sh
-git clone https://github.com/huggingface/transformers.js-examples.git
-```
 
 ### 2. Navigate to the Project Directory
 
 Change your working directory to the `smolvlm-webgpu` folder:
 
 ```sh
-cd transformers.js-examples/smolvlm-webgpu
+cd smolvlm-webgpu
 ```
 
 ### 3. Install Dependencies
