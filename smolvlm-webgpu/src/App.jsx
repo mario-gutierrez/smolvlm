@@ -13,20 +13,28 @@ function App() {
   const [loadingMessage, setLoadingMessage] = useState("");
   const [progressItems, setProgressItems] = useState([]);
   
-  // Video Mode State
+  // App Logic State
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
+  const streamRef = useRef(null); // Keep track of the camera stream to stop it when switching modes
+
+  // Input Source State
+  const [inputSource, setInputSource] = useState("camera"); // 'camera' or 'file'
   const [cameras, setCameras] = useState([]);
   const [selectedCamera, setSelectedCamera] = useState("");
+  const [videoFileUrl, setVideoFileUrl] = useState(null);
+
+  // Analysis State
   const [videoFramerate, setVideoFramerate] = useState(0); // 0 = manual/stopped
   const [videoPrompt, setVideoPrompt] = useState("Describe this image");
-  const [isVideoRunning, setIsVideoRunning] = useState(false);
-  const [videoOutput, setVideoOutput] = useState("");
-  const [videoTps, setVideoTps] = useState(null);
+  const [isAnalysisRunning, setIsAnalysisRunning] = useState(false);
+  const [modelOutput, setModelOutput] = useState("");
+  const [tps, setTps] = useState(null);
+  
   const isWorkerBusy = useRef(false);
   const inferenceInterval = useRef(null);
 
-  // Worker Initialization
+  // --- Worker Initialization ---
   useEffect(() => {
     if (!worker.current) {
       worker.current = new Worker(new URL("./worker.js", import.meta.url), {
@@ -68,27 +76,27 @@ function App() {
           break;
 
         case "start":
-          setVideoOutput("");
+          setModelOutput("");
           break;
 
         case "update":
           const { output, tps } = e.data;
-          setVideoTps(tps);
-          setVideoOutput((prev) => prev + output);
+          setTps(tps);
+          setModelOutput((prev) => prev + output);
           break;
 
         case "complete":
           isWorkerBusy.current = false;
           // If continuous "Max Speed" mode, trigger next frame immediately
-          if (videoFramerate === -1 && isVideoRunning) {
-              triggerVideoInference();
+          if (videoFramerate === -1 && isAnalysisRunning) {
+              triggerInference();
           }
           break;
 
         case "error":
           setError(e.data.data);
           isWorkerBusy.current = false;
-          setIsVideoRunning(false);
+          setIsAnalysisRunning(false);
           break;
       }
     };
@@ -104,16 +112,32 @@ function App() {
       worker.current.removeEventListener("message", onMessageReceived);
       worker.current.removeEventListener("error", onErrorReceived);
     };
-  }, [videoFramerate, isVideoRunning]);
+  }, [videoFramerate, isAnalysisRunning]);
 
-  // --- Video Logic ---
+  // --- Video Source Logic ---
 
-  // Handle Camera Permission and Stream Start
+  // Cleanup effect when unmounting or switching sources
   useEffect(() => {
-    // Only set up camera if ready
-    if (status !== 'ready') return;
+    return () => {
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
+      }
+      if (videoFileUrl) {
+        URL.revokeObjectURL(videoFileUrl);
+      }
+    };
+  }, []);
 
-    let currentStream = null;
+  // Handle Camera Setup
+  useEffect(() => {
+    if (status !== 'ready' || inputSource !== 'camera') {
+      // Stop camera if we switch away
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
+        streamRef.current = null;
+      }
+      return;
+    }
 
     const setupCamera = async () => {
       try {
@@ -122,10 +146,11 @@ function App() {
           : { video: true };
 
         const stream = await navigator.mediaDevices.getUserMedia(constraints);
-        currentStream = stream;
+        streamRef.current = stream;
 
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
+          videoRef.current.src = ""; // Clear src if it was set by file
         }
 
         const devices = await navigator.mediaDevices.enumerateDevices();
@@ -152,18 +177,43 @@ function App() {
     setupCamera();
 
     return () => {
-      if (currentStream) {
-        currentStream.getTracks().forEach(track => track.stop());
+      // Cleanup happens on re-run or unmount
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
+        streamRef.current = null;
       }
     };
-  }, [status, selectedCamera]);
+  }, [status, inputSource, selectedCamera]);
+
+  // Handle Video File Setup
+  useEffect(() => {
+    if (inputSource === 'file' && videoFileUrl && videoRef.current) {
+      videoRef.current.srcObject = null; // Clear camera stream
+      videoRef.current.src = videoFileUrl;
+      videoRef.current.play().catch(e => console.log("Auto-play prevented", e));
+    }
+  }, [inputSource, videoFileUrl]);
+
+  const handleFileUpload = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    // Cleanup old url
+    if (videoFileUrl) URL.revokeObjectURL(videoFileUrl);
+
+    const url = URL.createObjectURL(file);
+    setVideoFileUrl(url);
+    setIsAnalysisRunning(false); // Stop any running analysis
+  };
+
+  // --- Inference Logic ---
 
   const captureFrame = useCallback(() => {
     if (!videoRef.current || !canvasRef.current) return null;
     const video = videoRef.current;
     const canvas = canvasRef.current;
     
-    if (video.readyState !== 4) return null; 
+    if (video.readyState < 2) return null; // 2 = HAVE_CURRENT_DATA
 
     const context = canvas.getContext('2d');
     canvas.width = video.videoWidth;
@@ -172,7 +222,7 @@ function App() {
     return canvas.toDataURL('image/jpeg', 0.8);
   }, []);
 
-  const triggerVideoInference = useCallback(() => {
+  const triggerInference = useCallback(() => {
     if (isWorkerBusy.current) return;
     
     const image = captureFrame();
@@ -190,31 +240,35 @@ function App() {
     worker.current.postMessage({ type: "generate", data: message });
   }, [videoPrompt, captureFrame]);
 
-  // Handle Framerate Loop
+  // Handle Loop Interval
   useEffect(() => {
-    if (!isVideoRunning || status !== 'ready') {
+    if (!isAnalysisRunning || status !== 'ready') {
       if (inferenceInterval.current) clearInterval(inferenceInterval.current);
       return;
     }
 
     if (videoFramerate > 0) {
       const intervalMs = 1000 / videoFramerate;
-      inferenceInterval.current = setInterval(triggerVideoInference, intervalMs);
+      inferenceInterval.current = setInterval(triggerInference, intervalMs);
     } else if (videoFramerate === -1) {
-       triggerVideoInference();
+       triggerInference();
     }
 
     return () => {
       if (inferenceInterval.current) clearInterval(inferenceInterval.current);
     };
-  }, [isVideoRunning, videoFramerate, status, triggerVideoInference]);
+  }, [isAnalysisRunning, videoFramerate, status, triggerInference]);
 
-  const toggleVideoAnalysis = () => {
-    if (isVideoRunning) {
-      setIsVideoRunning(false);
+  const toggleAnalysis = () => {
+    if (isAnalysisRunning) {
+      setIsAnalysisRunning(false);
       worker.current.postMessage({ type: "interrupt" });
     } else {
-      setIsVideoRunning(true);
+      setIsAnalysisRunning(true);
+      // If using a video file, ensure it's playing
+      if (inputSource === 'file' && videoRef.current) {
+        videoRef.current.play();
+      }
     }
   };
 
@@ -225,7 +279,8 @@ function App() {
       <div className="flex flex-col items-center pt-4 pb-2 px-4 border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 shrink-0">
          <div className="flex items-center gap-4 mb-2">
             <div className="flex items-center gap-2">
-               <h1 className="text-xl font-bold">SmolVLM Live Video</h1>
+               <img src="logo.png" className="w-8 h-8"/>
+               <h1 className="text-xl font-bold">SmolVLM Video Analysis</h1>
             </div>
          </div>
       </div>
@@ -239,7 +294,7 @@ function App() {
               Real-time Video Analysis
             </h2>
             <p className="max-w-[500px] mb-6 text-center text-gray-600 dark:text-gray-400">
-              Load <span className="font-semibold">SmolVLM-256M-Instruct</span> to analyze your camera feed entirely in the browser using WebGPU.
+              Load <span className="font-semibold">SmolVLM-256M-Instruct</span> to analyze your camera feed or video files entirely in the browser using WebGPU.
             </p>
             {error && (
               <div className="text-red-500 text-center mb-4 p-2 bg-red-50 dark:bg-red-900/20 rounded">
@@ -271,22 +326,53 @@ function App() {
 
       {status === "ready" && (
         <div className="flex-1 flex flex-col p-4 gap-4 h-full overflow-hidden max-w-6xl mx-auto w-full">
-            {/* Video Controls */}
+            {/* Control Panel */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 bg-gray-100 dark:bg-gray-800 p-4 rounded-xl">
+               
+               {/* 1. Input Source Selection */}
                <div className="flex flex-col gap-1">
-                  <label className="text-xs font-semibold uppercase text-gray-500">Camera</label>
+                  <label className="text-xs font-semibold uppercase text-gray-500">Input Source</label>
                   <select 
                      className="p-2 rounded bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 text-sm"
-                     value={selectedCamera}
-                     onChange={(e) => setSelectedCamera(e.target.value)}
+                     value={inputSource}
+                     onChange={(e) => {
+                        setInputSource(e.target.value);
+                        setIsAnalysisRunning(false);
+                     }}
                   >
-                     {cameras.length === 0 && <option>Loading cameras...</option>}
-                     {cameras.map(cam => (
-                        <option key={cam.deviceId} value={cam.deviceId}>{cam.label || `Camera ${cam.deviceId.slice(0,5)}...`}</option>
-                     ))}
+                     <option value="camera">Webcam</option>
+                     <option value="file">Upload Video File</option>
                   </select>
                </div>
+
+               {/* 2. Source Options (Camera Select or File Upload) */}
+               <div className="flex flex-col gap-1">
+                  <label className="text-xs font-semibold uppercase text-gray-500">
+                    {inputSource === 'camera' ? 'Select Camera' : 'Select Video File'}
+                  </label>
+                  
+                  {inputSource === 'camera' ? (
+                     <select 
+                        className="p-2 rounded bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 text-sm"
+                        value={selectedCamera}
+                        onChange={(e) => setSelectedCamera(e.target.value)}
+                     >
+                        {cameras.length === 0 && <option>Loading cameras...</option>}
+                        {cameras.map(cam => (
+                           <option key={cam.deviceId} value={cam.deviceId}>{cam.label || `Camera ${cam.deviceId.slice(0,5)}...`}</option>
+                        ))}
+                     </select>
+                  ) : (
+                     <input 
+                       type="file" 
+                       accept="video/*"
+                       className="p-1.5 rounded bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 text-sm file:mr-2 file:py-0.5 file:px-2 file:rounded file:border-0 file:text-xs file:bg-blue-500 file:text-white hover:file:bg-blue-600"
+                       onChange={handleFileUpload}
+                     />
+                  )}
+               </div>
                
+               {/* 3. Framerate */}
                <div className="flex flex-col gap-1">
                   <label className="text-xs font-semibold uppercase text-gray-500">Framerate</label>
                   <select 
@@ -302,27 +388,28 @@ function App() {
                   </select>
                </div>
 
-               <div className="flex flex-col gap-1 lg:col-span-2">
-                  <label className="text-xs font-semibold uppercase text-gray-500">Prompt for every frame</label>
+               {/* 4. Prompt & Actions */}
+               <div className="flex flex-col gap-1 lg:col-span-1">
+                  <label className="text-xs font-semibold uppercase text-gray-500">Prompt</label>
                   <div className="flex gap-2">
                      <input 
                        type="text" 
-                       className="flex-1 p-2 rounded bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 text-sm"
+                       className="flex-1 p-2 rounded bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 text-sm min-w-0"
                        value={videoPrompt}
                        onChange={(e) => setVideoPrompt(e.target.value)}
                      />
                      <button
-                        onClick={videoFramerate === 0 ? triggerVideoInference : toggleVideoAnalysis}
-                        className={`px-4 py-2 rounded font-medium text-white transition-colors ${
+                        onClick={videoFramerate === 0 ? triggerInference : toggleAnalysis}
+                        className={`px-4 py-2 rounded font-medium text-white transition-colors shrink-0 ${
                            videoFramerate === 0 
                              ? (isWorkerBusy.current ? 'bg-gray-400 cursor-not-allowed' : 'bg-blue-500 hover:bg-blue-600')
-                             : (isVideoRunning ? 'bg-red-500 hover:bg-red-600' : 'bg-green-500 hover:bg-green-600')
+                             : (isAnalysisRunning ? 'bg-red-500 hover:bg-red-600' : 'bg-green-500 hover:bg-green-600')
                         }`}
-                        disabled={videoFramerate === 0 && isWorkerBusy.current}
+                        disabled={(videoFramerate === 0 && isWorkerBusy.current) || (inputSource === 'file' && !videoFileUrl)}
                      >
                         {videoFramerate === 0 
-                           ? (isWorkerBusy.current ? 'Processing...' : 'Analyze Now') 
-                           : (isVideoRunning ? 'Stop Loop' : 'Start Loop')}
+                           ? (isWorkerBusy.current ? '...' : 'Run') 
+                           : (isAnalysisRunning ? 'Stop' : 'Loop')}
                      </button>
                   </div>
                </div>
@@ -336,14 +423,16 @@ function App() {
                      ref={videoRef} 
                      autoPlay 
                      playsInline 
+                     loop={inputSource === 'file'} // Loop file videos for continuous analysis
                      muted 
+                     controls={inputSource === 'file'} // Show controls only for files
                      className="max-w-full max-h-full object-contain"
                   ></video>
                   <canvas ref={canvasRef} className="hidden"></canvas>
                   
                   {/* Overlay Status */}
-                  <div className="absolute top-2 right-2 bg-black/60 text-white text-xs px-2 py-1 rounded backdrop-blur-sm">
-                     {isVideoRunning ? '● Live Inference' : '○ Standby'}
+                  <div className="absolute top-2 right-2 bg-black/60 text-white text-xs px-2 py-1 rounded backdrop-blur-sm z-10 pointer-events-none">
+                     {isAnalysisRunning ? '● Analyzing' : '○ Standby'}
                   </div>
                </div>
 
@@ -351,10 +440,10 @@ function App() {
                <div className="flex-1 bg-gray-50 dark:bg-gray-800 rounded-xl p-4 border border-gray-200 dark:border-gray-700 flex flex-col min-h-[200px]">
                   <div className="flex justify-between items-center mb-2 border-b border-gray-200 dark:border-gray-700 pb-2">
                      <h3 className="font-semibold text-gray-700 dark:text-gray-200">Model Output</h3>
-                     {videoTps && <span className="text-xs text-gray-500">{videoTps.toFixed(1)} tok/s</span>}
+                     {tps && <span className="text-xs text-gray-500">{tps.toFixed(1)} tok/s</span>}
                   </div>
                   <div className="flex-1 overflow-y-auto whitespace-pre-wrap font-mono text-sm leading-relaxed text-gray-800 dark:text-gray-300">
-                     {videoOutput || <span className="text-gray-400 italic">Output will appear here...</span>}
+                     {modelOutput || <span className="text-gray-400 italic">Output will appear here...</span>}
                   </div>
                </div>
             </div>
