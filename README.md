@@ -16,30 +16,23 @@ models:
 
 ## Getting Started
 
-Follow the steps below to set up and run the application.
-
-### 1. Clone the Repository
-
-Clone the examples repository from GitHub:
-
-
-### 2. Navigate to the Project Directory
-
-Change your working directory to the `smolvlm-webgpu` folder:
+Clone this GitHub repository:
 
 ```sh
-cd smolvlm-webgpu
+git clone https://github.com/mario-gutierrez/smolvlm.git
 ```
 
-### 3. Install Dependencies
+Change your working directory to the `smolvlm` folder:
+
+```sh
+cd smolvlm
+```
 
 Install the necessary dependencies using npm:
 
 ```sh
 npm i
 ```
-
-### 4. Run the Development Server
 
 Start the development server:
 
