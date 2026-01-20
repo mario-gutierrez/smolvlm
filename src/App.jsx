@@ -26,7 +26,7 @@ function App() {
 
   // Analysis State
   const [videoFramerate, setVideoFramerate] = useState(0); // 0 = manual/stopped
-  const [videoPrompt, setVideoPrompt] = useState("Describe this image");
+  const [videoPrompt, setVideoPrompt] = useState("What is the person doing?");
   const [isAnalysisRunning, setIsAnalysisRunning] = useState(false);
   const [modelOutput, setModelOutput] = useState("");
   const [tps, setTps] = useState(null);
@@ -294,7 +294,7 @@ function App() {
               Real-time Video Analysis
             </h2>
             <p className="max-w-[500px] mb-6 text-center text-gray-600 dark:text-gray-400">
-              Load <span className="font-semibold">SmolVLM-256M-Instruct</span> to analyze your camera feed or video files entirely in the browser using WebGPU.
+              Load <span className="font-semibold">SmolVLM2-500M-Video-Instruct</span> to analyze your camera feed or video files entirely in the browser using WebGPU.
             </p>
             {error && (
               <div className="text-red-500 text-center mb-4 p-2 bg-red-50 dark:bg-red-900/20 rounded">
