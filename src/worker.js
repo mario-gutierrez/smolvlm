@@ -31,7 +31,7 @@ async function check() {
  * This class uses the Singleton pattern to enable lazy-loading of the pipeline
  */
 class SmolVLM {
-  static model_id = "HuggingFaceTB/SmolVLM-256M-Instruct";
+  static model_id = "HuggingFaceTB/SmolVLM2-500M-Video-Instruct";
 
   static async getInstance(progress_callback = null) {
     this.processor ??= AutoProcessor.from_pretrained(this.model_id, {
