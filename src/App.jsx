@@ -100,7 +100,7 @@ function App() {
         case "start":
             setOutputs((prev) => ({
                 ...prev,
-                [id]: prev[id] ? prev[id] + "\n\n--- New Generation ---\n" : ""
+                [id]: prev[id] ? prev[id] + "\n\n---------------\n" : ""
             }));
             break;
 
