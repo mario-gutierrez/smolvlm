@@ -39,7 +39,7 @@ class SmolVLM {
     });
 
     this.model ??= AutoModelForVision2Seq.from_pretrained(this.model_id, {
-      dtype: "fp32",
+      dtype: "fp32", // fp16 can be unstable on some devices, sticking to fp32 for safety
       device: "webgpu",
       progress_callback,
     });
@@ -51,7 +51,9 @@ class SmolVLM {
 const stopping_criteria = new InterruptableStoppingCriteria();
 
 let past_key_values_cache = null;
-async function generate(messages) {
+
+// Modified to accept a requestId to track which prompt this is
+async function generate(messages, requestId) {
   // For this demo, we only respond to the last message
   messages = messages.slice(-1);
 
@@ -87,12 +89,14 @@ async function generate(messages) {
       tps = (numTokens / (performance.now() - startTime)) * 1000;
     }
   };
+  
   const callback_function = (output) => {
     self.postMessage({
       status: "update",
       output,
       tps,
       numTokens,
+      id: requestId // Echo the ID back
     });
   };
 
@@ -103,8 +107,8 @@ async function generate(messages) {
     token_callback_function,
   });
 
-  // Tell the main thread we are starting
-  self.postMessage({ status: "start" });
+  // Tell the main thread we are starting for this specific ID
+  self.postMessage({ status: "start", id: requestId });
 
   const { past_key_values, sequences } = await model
     .generate({
@@ -127,6 +131,7 @@ async function generate(messages) {
       self.postMessage({
         status: "error",
         data: e.toString(),
+        id: requestId
       });
     });
   past_key_values_cache = past_key_values;
@@ -139,6 +144,7 @@ async function generate(messages) {
   self.postMessage({
     status: "complete",
     output: decoded,
+    id: requestId
   });
 }
 
@@ -159,7 +165,7 @@ async function load() {
 }
 // Listen for messages from the main thread
 self.addEventListener("message", async (e) => {
-  const { type, data } = e.data;
+  const { type, data, id } = e.data; // Destructure ID
 
   switch (type) {
     case "check":
@@ -172,7 +178,7 @@ self.addEventListener("message", async (e) => {
 
     case "generate":
       stopping_criteria.reset();
-      generate(data);
+      generate(data, id); // Pass ID to generate
       break;
 
     case "interrupt":
