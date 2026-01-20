@@ -17,6 +17,9 @@ function App() {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const streamRef = useRef(null);
+  
+  // Refs for auto-scrolling output
+  const outputRefs = useRef({});
 
   // Input Source State
   const [inputSource, setInputSource] = useState("camera");
@@ -28,8 +31,7 @@ function App() {
   const [videoFramerate, setVideoFramerate] = useState(0); 
   const [isAnalysisRunning, setIsAnalysisRunning] = useState(false);
   
-  // --- New Multi-Prompt State ---
-  // We manage two slots (0 and 1)
+  // --- Multi-Prompt State ---
   const [prompts, setPrompts] = useState([
     { id: 0, text: "What is the person doing?", enabled: true },
     { id: 1, text: "", enabled: true }
@@ -37,10 +39,20 @@ function App() {
   const [outputs, setOutputs] = useState({ 0: "", 1: "" });
   const [tps, setTps] = useState(null);
   
-  // Queue system for sequential processing of multiple prompts
+  // Queue system for sequential processing
   const isWorkerBusy = useRef(false);
   const pendingRequests = useRef([]); 
   const inferenceInterval = useRef(null);
+
+  // --- Auto-Scroll Logic ---
+  useEffect(() => {
+    // Iterate over all registered output refs and scroll them to the bottom
+    Object.values(outputRefs.current).forEach((el) => {
+      if (el) {
+        el.scrollTop = el.scrollHeight;
+      }
+    });
+  }, [outputs]); // Triggers whenever new tokens are added
 
   // --- Worker Initialization ---
   useEffect(() => {
@@ -86,10 +98,9 @@ function App() {
           break;
 
         case "start":
-            // When generation starts, we append a separator if text exists
             setOutputs((prev) => ({
                 ...prev,
-                [id]: prev[id] ? prev[id] + "\n\n-------------------\n" : ""
+                [id]: prev[id] ? prev[id] + "\n\n--- New Generation ---\n" : ""
             }));
             break;
 
@@ -102,7 +113,6 @@ function App() {
           break;
 
         case "complete":
-          // One prompt finished. Check if there are more in the queue.
           processRequestQueue();
           break;
 
@@ -110,7 +120,7 @@ function App() {
           setError(data);
           isWorkerBusy.current = false;
           setIsAnalysisRunning(false);
-          pendingRequests.current = []; // Clear queue on error
+          pendingRequests.current = [];
           break;
       }
     };
@@ -132,32 +142,25 @@ function App() {
   // --- Queue Processor ---
   const processRequestQueue = useCallback(() => {
     if (pendingRequests.current.length === 0) {
-        // Queue empty, we are fully done with this frame/batch
         isWorkerBusy.current = false;
-        
-        // If continuous "Max Speed" mode, trigger next frame immediately
-        // But only if we are truly done with the previous batch
         if (videoFramerate === -1 && isAnalysisRunning) {
             triggerInference();
         }
         return;
     }
 
-    // Still busy processing the queue
     isWorkerBusy.current = true;
     const nextRequest = pendingRequests.current.shift();
     
-    // Send to worker
     worker.current.postMessage({ 
         type: "generate", 
         data: nextRequest.message,
         id: nextRequest.id 
     });
 
-  }, [videoFramerate, isAnalysisRunning]); // triggerInference added to dependecies via closure but we define it below
+  }, [videoFramerate, isAnalysisRunning]);
 
   // --- Video Source Logic ---
-  // (Unchanged logic for camera/file setup)
   useEffect(() => {
     return () => {
       if (streamRef.current) {
@@ -236,7 +239,6 @@ function App() {
   };
 
   // --- Inference Logic ---
-
   const captureFrame = useCallback(() => {
     if (!videoRef.current || !canvasRef.current) return null;
     const video = videoRef.current;
@@ -250,16 +252,12 @@ function App() {
     return canvas.toDataURL('image/jpeg', 0.8);
   }, []);
 
-  // Defined here to be used in processRequestQueue closure logic if needed
-  // Note: We need to update processRequestQueue to call this, so we use a ref or careful dependency management
   const triggerInference = useCallback(() => {
     if (isWorkerBusy.current) return;
     
-    // 1. Capture Image (Shared for all prompts in this instant)
     const image = captureFrame();
     if (!image) return;
 
-    // 2. Build Queue for all enabled prompts
     const requests = prompts
         .filter(p => p.enabled && p.text.trim().length > 0)
         .map(p => ({
@@ -275,13 +273,11 @@ function App() {
 
     if (requests.length === 0) return;
 
-    // 3. Start Processing
     pendingRequests.current = requests;
     processRequestQueue();
     
   }, [prompts, captureFrame, processRequestQueue]);
 
-  // Handle Loop Interval
   useEffect(() => {
     if (!isAnalysisRunning || status !== 'ready') {
       if (inferenceInterval.current) clearInterval(inferenceInterval.current);
@@ -304,7 +300,7 @@ function App() {
     if (isAnalysisRunning) {
       setIsAnalysisRunning(false);
       worker.current.postMessage({ type: "interrupt" });
-      pendingRequests.current = []; // Clear queue
+      pendingRequests.current = [];
     } else {
       setIsAnalysisRunning(true);
       if (inputSource === 'file' && videoRef.current) {
@@ -375,7 +371,7 @@ function App() {
 
       {status === "ready" && (
         <div className="flex-1 flex flex-col p-4 gap-4 h-full overflow-hidden max-w-7xl mx-auto w-full">
-            {/* Top Control Panel */}
+            {/* Control Panel */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 bg-gray-100 dark:bg-gray-800 p-4 rounded-xl shrink-0">
                
                {/* 1. Source */}
@@ -451,10 +447,10 @@ function App() {
                </div>
             </div>
 
-            {/* Split View: Video | Dual Outputs */}
+            {/* Split View */}
             <div className="flex-1 flex flex-col lg:flex-row gap-4 min-h-0">
                
-               {/* Left: Video Feed */}
+               {/* Video Feed */}
                <div className="lg:w-1/2 bg-black rounded-xl overflow-hidden relative flex items-center justify-center border border-gray-800">
                   <video 
                      ref={videoRef} 
@@ -471,7 +467,7 @@ function App() {
                   </div>
                </div>
 
-               {/* Right: Output Panel (Split Vertically for 2 Prompts) */}
+               {/* Output Panel */}
                <div className="lg:w-1/2 flex flex-col gap-2">
                   {prompts.map((prompt) => (
                     <div key={prompt.id} className="flex-1 flex flex-col bg-gray-50 dark:bg-gray-800 rounded-xl p-3 border border-gray-200 dark:border-gray-700 overflow-hidden">
@@ -493,8 +489,11 @@ function App() {
                           </button>
                        </div>
 
-                       {/* Output Area */}
-                       <div className="flex-1 overflow-y-auto whitespace-pre-wrap font-mono text-sm leading-relaxed text-gray-800 dark:text-gray-300 p-2 bg-white dark:bg-gray-900 rounded border border-gray-200 dark:border-gray-700 shadow-inner">
+                       {/* Output Area with Auto-Scroll Ref */}
+                       <div 
+                         ref={(el) => (outputRefs.current[prompt.id] = el)}
+                         className="flex-1 overflow-y-auto whitespace-pre-wrap font-mono text-sm leading-relaxed text-gray-800 dark:text-gray-300 p-2 bg-white dark:bg-gray-900 rounded border border-gray-200 dark:border-gray-700 shadow-inner"
+                       >
                           {outputs[prompt.id] 
                             ? outputs[prompt.id] 
                             : <span className="text-gray-400 italic text-xs">Waiting for generation...</span>
